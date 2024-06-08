@@ -5,24 +5,29 @@
 #endif
 #include <Espalexa.h>
 #include <Servo.h>
+#include <WiFiManager.h>
+#include <LittleFS.h>
 
 #define WIFI_LED_GPIO 13
 #define MOTOR_GPIO 16
-#define ALEXA_DEVICE_NAME "AC"
-#define WIFI_SSID "ABC"
-#define WIFI_PASSWORD "****"
 #define BAUD_RATE 115200
 #define SERVO_REST_ANGLE 90
-#define SERVO_SWITCH_ON_ANGLE_DIFF 60 
-
-boolean connectToWifi();
-void alexaCallback(uint8_t brightness);
+#define DEFAULT_DEVICE_NAME "FingerBot"
+#define SERVO_SWITCH_ON_ANGLE_DIFF 60
 
 Servo servo;
 boolean wifiConnected = false;
 Espalexa espalexa;
+String deviceName = DEFAULT_DEVICE_NAME;
+bool shouldSaveConfig = false;
 
-void rotate_and_rest_servo() {
+//callback for updating device name config change
+void saveConfigCallback() {
+  Serial.println("Should save device name config");
+  shouldSaveConfig = true;
+}
+
+void rotateAndRestServo() {
   servo.write(SERVO_REST_ANGLE + SERVO_SWITCH_ON_ANGLE_DIFF);
   delay(1000);
   servo.write(SERVO_REST_ANGLE);
@@ -31,81 +36,102 @@ void rotate_and_rest_servo() {
 
 void alexaCallback(uint8_t brightness) {
   if (brightness == 255) {
-    rotate_and_rest_servo();
+    rotateAndRestServo();
 
     Serial.println("Device is ON");
   } else {
-    rotate_and_rest_servo();
+    rotateAndRestServo();
     Serial.println("Device is OFF");
   }
 }
 
-boolean connectToWifi() {
-  boolean state = true;
-  int i = 0;
+void registerDevice(String deviceName) {
+  Serial.println("Adding devices");
 
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.println("");
-  Serial.println("Connecting to WiFi");
-
-  // Wait for connection
-  Serial.print("Connecting...");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-    if (i > 20) {
-      state = false;
-      break;
-    }
-    i++;
-  }
-
-  if (state) {
-    Serial.print("Connected to ");
-    Serial.println(WIFI_SSID);
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
-  } else {
-    Serial.println("Connection failed.");
-  }
-  return state;
+  espalexa.addDevice(deviceName, alexaCallback);
+  espalexa.begin();
 }
 
-void registerDevice() {
-  espalexa.addDevice(ALEXA_DEVICE_NAME, alexaCallback);
-  espalexa.begin();
+String readFile(fs::FS &fs, const char *path) {
+  Serial.printf("Reading file: %s\r\n", path);
+  File file = fs.open(path, "r");
+  if (!file || file.isDirectory()) {
+    Serial.println("- empty file or failed to open file");
+    return String();
+  }
+  Serial.println("- read from file:");
+  String fileContent;
+  while (file.available()) {
+    fileContent += String((char)file.read());
+  }
+  file.close();
+  Serial.println(fileContent);
+  return fileContent;
+}
+
+void writeFile(fs::FS &fs, const char *path, const char *message) {
+  Serial.printf("Writing file: %s\r\n", path);
+  File file = fs.open(path, "w");
+  if (!file) {
+    Serial.println("- failed to open file for writing");
+    return;
+  }
+  if (file.print(message)) {
+    Serial.println("- file written");
+  } else {
+    Serial.println("- write failed");
+  }
+  file.close();
+}
+
+void handleConfigPortal() {
+  if (!LittleFS.begin()) {
+    Serial.println("LittleFS mount failed. Using default device name");
+  } else {
+    String data = readFile(LittleFS, "/data.txt");
+    if (data.length() > 0) {
+      deviceName = data;
+    }
+  }
+
+  WiFiManager wifiManager;
+  wifiManager.setSaveConfigCallback(saveConfigCallback);
+  WiFiManagerParameter deviceNameParam("deviceName", "Device Name", deviceName.c_str(), 20);
+  wifiManager.addParameter(&deviceNameParam);
+
+  bool res = wifiManager.autoConnect("FingerBot Setup");
+
+  if (!res) {
+    Serial.println("Failed to connect");
+    ESP.restart();
+  } else {
+    Serial.println("Connected to wifi");
+  }
+
+  deviceName = deviceNameParam.getValue();
+
+  if (shouldSaveConfig) {
+    writeFile(LittleFS, "/data.txt", deviceName.c_str());
+  }
+
+  // Indicate the wifi connection via LED
+  pinMode(WIFI_LED_GPIO, OUTPUT);
+  digitalWrite(WIFI_LED_GPIO, HIGH);
 }
 
 void setup() {
   Serial.begin(BAUD_RATE);
 
-  pinMode(WIFI_LED_GPIO, OUTPUT);
-  wifiConnected = connectToWifi();
+  handleConfigPortal();
 
-  if (wifiConnected) {
-    digitalWrite(WIFI_LED_GPIO, HIGH);
-    Serial.println("Adding devices");
-    registerDevice();
-  } else {
-    digitalWrite(WIFI_LED_GPIO, LOW);
-    Serial.println("Cannot connect to WiFi");
-    delay(1000);
-  }
+  registerDevice(deviceName);
 
   servo.attach(MOTOR_GPIO, 500, 2400);
 }
 
 void loop() {
   if (WiFi.status() == WL_CONNECTED) {
-    if (wifiConnected) {
-      espalexa.loop();
-      delay(1);
-    } else {
-      wifiConnected = connectToWifi();
-      if (wifiConnected) {
-        registerDevice();
-      }
-    }
+    espalexa.loop();
+    delay(1);
   }
 }
