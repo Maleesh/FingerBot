@@ -7,6 +7,7 @@
 #include <Servo.h>
 #include <WiFiManager.h>
 #include <LittleFS.h>
+#include <ArduinoOTA.h>
 
 #define WIFI_LED_GPIO 13
 #define MOTOR_GPIO 16
@@ -127,9 +128,13 @@ void setup() {
   registerDevice(deviceName);
 
   servo.attach(MOTOR_GPIO, 500, 2400);
+
+  ArduinoOTA.begin();
 }
 
 void loop() {
+  ArduinoOTA.handle();
+
   if (WiFi.status() == WL_CONNECTED) {
     espalexa.loop();
     delay(1);
